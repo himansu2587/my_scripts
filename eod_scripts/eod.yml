@@ -1,0 +1,154 @@
+---
+- name: Playbook for eod jobs servers
+  hosts: all
+  gather_facts: no
+  tasks:
+  - name: Check if EOD servers already running
+    shell: "aws ec2 --region ap-south-1 describe-instances --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=lending-lms-eod-jobs*' --query 'Reservations[*].Instances[*].[PrivateIpAddress]' --output text | wc -l"
+    register: instance
+    tags:
+    - launch
+
+  - name: marked failed with message if EOD servers already running
+    fail: msg="There are {{ instance.stdout }} servers already running. So marked this job as failed"
+    failed_when: "instance.stdout|float > 0"
+    tags:
+    - launch
+
+  - name: launch new instance from template
+    shell: "aws ec2 run-instances --region ap-south-1 --launch-template LaunchTemplateId=lt-0b2caddb3ea26f3ac,Version=$Latest --subnet-id subnet-01293e6898b037bb0 --count 2 | jq -r '.Instances[].NetworkInterfaces[].PrivateIpAddresses[] | .PrivateIpAddress'"
+    register: instance_ip
+    tags:
+    - launch
+
+  - name: get the instance id
+    shell: "aws ec2 --region ap-south-1 describe-instances --filters Name=private-ip-address,Values={{ item }} | jq -r '.Reservations[].Instances[] | .InstanceId'"
+    register: instance_id
+    with_items: "{{ instance_ip.stdout_lines }}"
+    tags:
+    - launch
+
+  - name: print instance ip
+    debug:
+     msg: "{{ instance_ip.stdout_lines  }}"
+    tags:
+    - launch
+
+  - name: print instance id
+    debug:
+     msg: "{{ item.stdout }}"
+    with_items: "{{ instance_id.results }}"
+    tags:
+    - launch
+
+  - name: pause for 300 seconds
+    pause:
+     minutes: 5
+    tags:
+    - launch
+
+  - name: tagging
+    ec2_tag:
+     region: ap-south-1
+     resource: "{{ item.stdout }}"
+     state: present
+     tags:
+      Name: lending-lms-eod-jobs-1
+      Project: lms-eod-jobs
+      Application: Backend
+      TeamDL: lms.tech@paytm.com
+      Environment: Production
+      CostCenter: Lending-BLR
+      TechTeam: lending-lms
+      DevopsDL: lending.devops@paytm.com
+      BusinessUnit: Lending
+    with_items: "{{ instance_id.results }}"
+    tags:
+    - launch
+
+  - name: Get the IPs for adding to DNS
+    shell: aws ec2 --region ap-south-1 describe-instances --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=lending-lms-eod-jobs-1*' --query 'Reservations[*].Instances[*].[PrivateIpAddress]' --output text | sed -z 's/\n/,/g;s/,$/\n/'
+    register: record
+    tags:
+    - dns_add
+
+  - name: Get the IPs for adding to DNS
+    shell: "aws ec2 --region ap-south-1 describe-instances --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=lending-lms-eod-jobs-1*' --query 'Reservations[*].Instances[*].[PrivateIpAddress]' --output text"
+    register: instance_ip
+    tags:
+    - dns_add
+
+  - name: pause for 60 seconds
+    pause:
+     minutes: 1
+    tags:
+    - dns_add
+
+  - name: check the healthcheck with until loop
+    shell: "curl -I http://{{ item }}:80/lms/actuator/health"
+    register: health_check
+    with_items: "{{ instance_ip.stdout_lines }}"
+    until: "'HTTP/1.1 200' in health_check.stdout"
+    retries: 5
+    delay: 10
+    tags:
+    - dns_add
+
+  - name: print healthcheck output
+    debug:
+     msg: "{{ health_check  }}"
+    tags:
+    - dns_add
+
+  - name: Update DNS with adding the new instances IP
+    route53:
+     state: present
+     zone: lending.paytm.com
+     record: lms-eod-jobs-1.lending.paytm.com
+     type: A
+     ttl: 60
+     value: "{{ record.stdout }}"
+     wait: yes
+    tags:
+    - dns_add
+
+  - name: Terminate the instnace
+    shell: "aws ec2 --region ap-south-1 describe-instances --filters 'Name=instance-state-name,Values=running' 'Name=tag:Name,Values=lending-lms-eod-jobs-1*' --query 'Reservations[*].Instances[*].[PrivateIpAddress]' --output text"
+    register: instance_ip_for_termination
+    tags:
+    - terminate
+
+  - name: Get the instance id for termination
+    shell: "aws ec2 --region ap-south-1 describe-instances --filters Name=private-ip-address,Values={{ item }} | jq -r '.Reservations[].Instances[] | .InstanceId'"
+    register: instance_id_for_termination
+    with_items: "{{ instance_ip_for_termination.stdout_lines }}"
+    tags:
+    - terminate
+
+  - name: Terminate the instance
+    shell: "aws ec2 --region ap-south-1 terminate-instances --instance-ids {{ item.stdout }}"
+    with_items: "{{ instance_id_for_termination.results }}"
+    tags:
+    - terminate
+
+  - name: Retrieve the details for DNS-1
+    route53:
+     state: get
+     zone: lending.paytm.com
+     record: lms-eod-jobs-1.lending.paytm.com
+     type: A
+    register: rec
+    tags:
+    - dns_del
+
+  - name: Delete DNS-1 A record using the results from the get command
+    route53:
+     state: absent
+     zone: lending.paytm.com
+     record: "{{ rec.set.record }}"
+     ttl: "{{ rec.set.ttl }}"
+     type: "{{ rec.set.type }}"
+     value: "{{ rec.set.value }}"
+    ignore_errors: True
+    tags:
+    - dns_del
