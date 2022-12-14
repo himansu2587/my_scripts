@@ -1,0 +1,103 @@
+pipeline {
+   agent { label 'tools02' }
+
+   tools {
+      maven "maven"
+   }
+
+   stages {
+     stage('CleanWorkspace') {
+          steps {
+              cleanWs()
+          }
+      }
+     stage('slacknotify') {
+        when {
+          expression {
+            params.DEPLOY == "prod"
+          }
+        }
+         steps {
+            slacknotify 'STARTED'
+         }
+      }  
+      stage('Build') {
+         steps {
+            git branch: '${BRANCH}', url: 'git@bitbucket.org:paytmteam/lending-lms.git'
+            sh "sed -i '\$d' lms-app/src/main/scripts/lms-service.sh"
+            sh "sed -i 's/KAFKA_AUTO_STARTUP=false/KAFKA_AUTO_STARTUP=true/g' lms-app/src/main/scripts/lms-service.sh"
+            sh "sed -i 's/FORK_JOIN_POOL_THREAD=3/FORK_JOIN_POOL_THREAD=5/g' lms-app/src/main/scripts/lms-service.sh"
+            sh "sed -i 's/-Xms10G -Xmx10G/-XX:InitialRAMPercentage=20.0 -XX:MinRAMPercentage=50.0 -XX:MaxRAMPercentage=75.0/g' lms-app/src/main/scripts/lms-service.sh"
+            sh "echo /usr/bin/java '\$'JAVA_OPTS -jar -Dspring.profiles.active=${ENV} -jar /lending/lending-lms/lib/lms-app-1.0.0-SNAPSHOT.jar >> lms-app/src/main/scripts/lms-service.sh"
+            sh "mvn clean install -P${ENV}"
+         }
+
+         post {
+            success {
+              sh encoding: 'utf-8', label: 'upload_to_s3', returnStdout: true, script: 'aws s3 cp lms-app/target/rpm/lms-app/RPMS/noarch/*.rpm s3://paytm-lending-infra/artifacts/lms-kafka-jobs/${ENV}/${BRANCH}-${BUILD_NUMBER}.rpm'
+            }
+         }
+      }
+      stage('DeployStage') {
+        when {
+          expression {
+            params.DEPLOY == "stage"
+          }
+        }
+        steps {
+          sh encoding: 'utf-8', label: 'download-deployment-script', returnStdout: true, script: 'aws s3 cp s3://paytm-lending-infra/scripts/deployment/deploy.py /tmp/deploy.py'
+          sh encoding: 'utf-8', label: 'deploy', returnStdout: true, script: '/jenkins/scripts/venv/bin/python /tmp/deploy.py --build ${BRANCH}-${BUILD_NUMBER}.rpm --service lmsapp.service --project=lending-lms'
+          sh encoding: 'utf-8', label: 'deploy', returnStdout: true, script:'rm -f /tmp/deploy.py'
+        }
+      }
+      stage('DeployProd') {
+        when {
+          expression {
+            params.DEPLOY == "prod"
+          }
+        }
+        environment {
+            PYTHONUNBUFFERED = true
+         }
+        steps {
+          dir('lending-ansible') {
+                git branch: 'develop', url: 'git@bitbucket.org:paytmteam/lending-ansible.git'
+                sh "sh -x /jenkins/scripts/tg_change.sh gather"
+                ansiblePlaybook credentialsId: '89abc41a-4847-418e-8574-4ba0cf88722b', extraVars: [service: 'lms-kafka-jobs', project: 'lms-kafka-jobs', env: '${ENV}', node_role: 'False' , tagname: 'False' , build: '${BRANCH}-${BUILD_NUMBER}.rpm'], disableHostKeyChecking: true, installation: 'ansible', inventory: 'inventory_scripts/ec2.py', limit: 'security_group_lms_backend_kafka_day_end_jobs', playbook: 'deploy.yml', tags: 'common,apm,proxysql,deploy', vaultCredentialsId: 'ansible-vault'
+                sh "sh -x /jenkins/scripts/tg_change.sh add"
+            }
+        }
+      
+        
+        
+        post {
+            success {
+              sh label: 'update build info', script: '''echo build: ${BRANCH}-${BUILD_NUMBER}.rpm > build_info.yml
+                         echo deployment_date: `date` >> build_info.yml 
+                         aws s3 mv build_info.yml s3://paytm-lending-infra/deployments/lms-kafka-jobs/build_info.yml'''
+            }
+         }
+      }
+       stage('Grfana Annotation') {
+           steps {
+              script{
+               if(params.DEPLOY == 'prod') {
+               utils.annotateEventToGrafana("deploy")
+               }
+              }
+           }
+       }        
+      
+   }
+   
+    post {
+        always {
+            script {
+                if(params.DEPLOY == 'prod') {
+                    echo currentBuild.result
+                    slacknotify currentBuild.result
+                }    
+            }
+        }
+   }   
+}

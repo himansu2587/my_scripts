@@ -1,0 +1,127 @@
+@Library("sharedlib_paytmlending") _
+def utils = new annotateEventToGrafana()
+pipeline {
+    options {
+        disableConcurrentBuilds()
+    }
+
+    agent {label 'tools02'}
+
+    tools {
+        maven "maven"
+        jdk "oracle-jdk-8"
+    }
+
+    stages {
+        stage('CleanWorkspace') {
+            steps {
+                slacknotify 'STARTED'
+                cleanWs()
+            }
+        }
+
+        stage('CI: Check for ongoing deployment') {
+            steps {
+                sh "hostname -i"
+                dir('lending-lms') {
+                    sh "chmod -R 700 ./"
+                    git branch: '${BRANCH}', url: 'git@bitbucket.org:paytmteam/lending-lms.git'
+                    sh "sed -i '\$d' lms-app/src/main/scripts/lms-service.sh"
+                    sh "echo /usr/bin/java '\$'JAVA_OPTS -jar -Dspring.profiles.active=${ENV} -jar /lending/lending-lms/lib/lms-app-1.0.0-SNAPSHOT.jar >> lms-app/src/main/scripts/lms-service.sh"
+                }
+                dir('lending-ci-cd') {
+                    sh "export PYTHONUNBUFFERED=true"
+                    sh encoding: 'utf-8', label: 'provide execute_permissions_to_user', returnStdout: true, script: "chmod -R 700 ./"
+                    git branch: 'master', url: 'git@bitbucket.org:paytmteam/lending-ci-cd.git'
+                    sh encoding: 'utf-8', label: 'virtualenv_and_install_dependencies', returnStdout: true, script: "virtualenv venv --python=python3 && . venv/bin/activate && python3 -m pip install -r requirements.txt"
+                    sh encoding: 'utf-8', label: 'export_pythonpath', returnStdout: true, script: "export PYTHONPATH=${WORKSPACE}/lending-ci-cd"
+                    sh encoding: 'utf-8', label: 'validate_ongoing_cluster_election', returnStdout: true, script: "python3 cluster_election_status.py --service-config-file=${WORKSPACE}/lending-lms/.cicd/infra.yml --environment=${ENV}"
+                }
+            }
+        }
+
+        stage('CI: Build application and push to s3') {
+            steps {
+                dir('lending-lms') {
+                    sh "mvn clean install -P${ENV}"
+                }
+            }
+            post {
+                success {
+                    dir('lending-lms') {
+                        sh encoding: 'utf-8', label: 'upload_rpmbuild_to_s3', returnStdout: true, script: "aws s3 cp lms-app/target/rpm/lms-app/RPMS/noarch/*.rpm s3://paytm-lending-infra/artifacts/lending_lms/${ENV}/${BRANCH}-${BUILD_NUMBER}.rpm"
+                    }
+                    sh label: 'update build info', script: '''
+                        echo build: ${BRANCH}-${BUILD_NUMBER}.rpm > build_info.yml
+                        echo deployment_date: `date` >> build_info.yml
+                        aws s3 mv build_info.yml s3://paytm-lending-infra/deployments/lending-lms/build_info.yml'''
+                    sh encoding: 'utf-8', label: 'zip_service_cicd_config', returnStdout: true, script: "tar -cvzf cicd-lending-lms-infra.tgz -C lending-lms .cicd"
+                    sh encoding: 'utf-8', label: 'upload_cicd_zip', returnStdout: true, script: "aws s3 cp cicd-lending-lms-infra.tgz s3://paytm-lending-infra/lending-ci-cd/lending-lms/"
+                    sh encoding: 'utf-8', label: 'rm_service_config_tgz', returnStdout: true, script: "rm cicd-lending-lms-infra.tgz"
+                }
+            }
+        }
+
+        stage('CD: Provision-infra - ASG/TargetGroups/Launch-template') {
+            steps {
+                dir('lending-ci-cd') {
+                    sh "export PYTHONUNBUFFERED=true"
+                    sh encoding: 'utf-8', label: 'provide execute_permissions_to_user', returnStdout: true, script: "chmod -R 700 ./"
+                    git branch: 'master', url: 'git@bitbucket.org:paytmteam/lending-ci-cd.git'
+                    sh encoding: 'utf-8', label: 'virtualenv_and_install_dependencies', returnStdout: true, script: "virtualenv venv --python=python3 && . venv/bin/activate && python3 -m pip install -r requirements.txt"
+                    sh encoding: 'utf-8', label: 'export_pythonpath', returnStdout: true, script: "export PYTHONPATH=${WORKSPACE}/lending-ci-cd"
+                    sh encoding: 'utf-8', label: 'download_service_cicd_config_gz', returnStdout: true, script: "aws s3 cp s3://paytm-lending-infra/lending-ci-cd/lending-lms/cicd-lending-lms-infra.tgz ${WORKSPACE}/lending-ci-cd/cicd-lending-lms-infra.tgz"
+                    sh encoding: 'utf-8', label: 'extract_cicd_config_gz', returnStdout: true, script: "tar -xvzf cicd-lending-lms-infra.tgz"
+                    sh encoding: 'utf-8', label: 'provision_infra', returnStdout: true, script: "python3 provision_infra.py --environment=${ENV} --service-config-file=${WORKSPACE}/lending-ci-cd/.cicd/infra.yml --build-version=${BRANCH}-${BUILD_NUMBER}.rpm"
+                }
+            }
+        }
+
+        stage('CD: Route fraction of live traffic to passive-cluster') {
+            steps {
+                dir('lending-ci-cd') {
+                    sh "export PYTHONUNBUFFERED=true"
+                    sh encoding: 'utf-8', label: 'provide execute_permissions_to_user', returnStdout: true, script: "chmod -R 700 ./"
+                    git branch: 'master', url: 'git@bitbucket.org:paytmteam/lending-ci-cd.git'
+                    sh encoding: 'utf-8', label: 'virtualenv_and_install_dependencies', returnStdout: true, script: "virtualenv venv --python=python3 && . venv/bin/activate && python3 -m pip install -r requirements.txt"
+                    sh encoding: 'utf-8', label: 'export_pythonpath', returnStdout: true, script: "export PYTHONPATH=${WORKSPACE}/lending-ci-cd"
+                    sh encoding: 'utf-8', label: 'update_passive_cluster', returnStdout: true, script: "python3 update_passive_cluster.py --service-config-file=${WORKSPACE}/lending-ci-cd/.cicd/infra.yml --environment=${ENV} --deployment-workflow-mode=JENKINS_SERVICE_DEPLOYMENT_MODE --deployment-rollout-mode=${DEPLOYMENT_ROLLOUT_MODE}"
+                }
+            }
+        }
+
+        stage('CD: compare and swap passive to active') {
+            steps {
+                dir('lending-ci-cd') {
+                    sh "export PYTHONUNBUFFERED=true"
+                    sh encoding: 'utf-8', label: 'provide execute_permissions_to_user', returnStdout: true, script: "chmod -R 700 ./"
+                    git branch: 'master', url: 'git@bitbucket.org:paytmteam/lending-ci-cd.git'
+                    sh encoding: 'utf-8', label: 'virtualenv_and_install_dependencies', returnStdout: true, script: "virtualenv venv --python=python3 && . venv/bin/activate && python3 -m pip install -r requirements.txt"
+                    sh encoding: 'utf-8', label: 'export_pythonpath', returnStdout: true, script: "export PYTHONPATH=${WORKSPACE}/lending-ci-cd"
+                    sh encoding: 'utf-8', label: 'schedule_cluster_manager', returnStdout: true, script: "python3 schedule_cluster_manager.py --auto-traffic-swap=true --service-config-file=${WORKSPACE}/lending-ci-cd/.cicd/infra.yml --environment=${ENV} --deployment-workflow-mode=JENKINS_SERVICE_DEPLOYMENT_MODE --deployment-rollout-mode=${DEPLOYMENT_ROLLOUT_MODE}"
+                }
+            }
+        }
+       stage('Grfana Annotation') {
+            steps {
+               script{
+                utils.annotateEventToGrafana("deploy")
+
+               }
+            }
+        }
+
+    }
+    post {
+            success {
+              sh label: 'update build info', script: '''echo build: ${BRANCH}-${BUILD_NUMBER}.rpm > build_info.yml
+                         echo deployment_date: `date` >> build_info.yml
+                         aws s3 mv build_info.yml s3://paytm-lending-infra/deployments/lending-lms-blugreen/build_info.yml'''
+            }
+            always {
+                echo currentBuild.result
+                slacknotify currentBuild.result
+            }
+    }
+
+}

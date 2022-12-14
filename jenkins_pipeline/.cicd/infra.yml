@@ -1,0 +1,626 @@
+---
+AnsiblePlayBookDeployCmd: ansible-playbook deploy.yml -i hosts -l 127.0.0.1 -t logrotate,apm,common,proxysql,bootstrap,nginx,post-bootstrap
+  --vault-password-file ./vault_password -e service=lending_lms -e appname=lending-lms
+  -e logpath=/lending/lending-lms/logs -e project=lending_lms -e env=stage -e bootstraping=true
+  -e health_check='/lms/actuator/health' -e node_role=False -e tagname=False
+  -c local -e@group_vars/security_group_prod_sg_lending_lmsapp -vvv
+AnsiblePlayBookDeployCmdPattern: '{{AnsiblePlayBookDeployCmd}}'
+BlueGreenDeploymentInfo:
+  AcceptedPerformanceDeviation: 10
+  BlueGreenDeploymentEnabled: true
+  MonitorPeriodSeconds: 600
+  PassiveClusterTrafficPercentage: 0.1
+  AsyncMetricsSwap: true
+Environment: &env stage
+Profile: common
+Resources:
+  AutoScalingGroups:
+    AvailabilityZones:
+    - ap-south-1c
+    - ap-south-1b
+    - ap-south-1a
+    CapacityRebalance: true
+    DefaultCooldown: 300
+    DesiredCapacity: 1
+    HealthCheckGracePeriod: 300
+    HealthCheckType: EC2
+    LifeCycleHooks:
+    - DefaultResult: CONTINUE
+      HeartbeatTimeout: 270
+      LifecycleHookName: AsgEc2InstanceElbRegistrationDelay
+      LifecycleTransition: autoscaling:EC2_INSTANCE_LAUNCHING
+    - DefaultResult: CONTINUE
+      HeartbeatTimeout: 100
+      LifecycleHookName: spotcoin-lh-88257
+      LifecycleTransition: autoscaling:EC2_INSTANCE_TERMINATING
+    MaxSize: 1
+    MinSize: 1
+    MixedInstancesPolicy:
+      InstancesDistribution:
+        OnDemandAllocationStrategy: prioritized
+        OnDemandBaseCapacity: 0
+        OnDemandPercentageAboveBaseCapacity: 60
+        SpotAllocationStrategy: capacity-optimized-prioritized
+      LaunchTemplate:
+        LaunchTemplateSpecification:
+          LaunchTemplateName: ''
+        Overrides:
+        - InstanceType: c4.xlarge
+    NewInstancesProtectedFromScaleIn: false
+    ServiceLinkedRoleARN: arn:aws:iam::340077773684:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling
+    Tags:
+    - Key: Environment
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Production
+    - Key: Name
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: prod-lending-lmsapp-as-01
+    - Key: Project
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending_lms
+    - Key: Organization
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: OCL
+    - Key: Application
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: backend
+    - Key: TechTeam
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending-lms
+    - Key: CostCenter
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Lending-BLR
+    - Key: BusinessUnit
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Lending
+    - Key: TeamDL
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lms.tech@paytm.com
+    - Key: DevopsDL
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending.devops@paytm.com
+    TerminationPolicies:
+    - NewestInstance
+    VPCZoneIdentifier: subnet-03a60274e19aa144e
+  LaunchTemplate:
+    DefaultVersion: true
+    LaunchTemplateData:
+      BlockDeviceMappings:
+      - DeviceName: /dev/sda1
+        Ebs:
+          DeleteOnTermination: true
+          Encrypted: false
+          VolumeSize: 50
+          VolumeType: gp2
+      - DeviceName: /dev/sdb
+        Ebs:
+          DeleteOnTermination: true
+          Encrypted: false
+          VolumeSize: 50
+          VolumeType: gp2
+      EbsOptimized: false
+      IamInstanceProfile:
+        Arn: arn:aws:iam::340077773684:instance-profile/lending-ckyc-service-role
+      ImageId: ami-076503eda3cf38889
+      InstanceType: m5a.xlarge
+      KeyName: lending_devops_2022
+      Monitoring:
+        Enabled: false
+      SecurityGroupIds:
+      - sg-0097015f21cc7be8d
+      - sg-07f0865953dabd563
+      - sg-0800bd797f24adeaf
+      UserData: |
+        #!/usr/bin/env bash
+        exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+        echo "boostrap starttime: $(date)"
+        cd /tmp
+        rm -rf lending-ansible lending-ansible.tar.gz
+        aws s3 cp s3://paytm-lending-infra/scripts/lending-ansible.tar.gz .
+        tar -xvzf lending-ansible.tar.gz
+        cd lending-ansible
+        {{AnsiblePlayBookDeployCmd}}
+        cd ansible-freeipa
+        ansible-playbook -i inventory/hosts install-client.yml -c local
+        echo "boostrap endtime: $(date)"
+        echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCY8y714UIm1OpdtwcP1YYWPKxQAvojHB3aDYA7FuN1GF9V3kHM9JfTCi2KX0QZo2k/WeZ4O6FN1cH+6NRUEiaueLPc8QV1+NHySg9vnC8qJKObN1bujomO9FfOdlssXiWdWvGy3bf4s+zOJ1uKgLdEFhPepuni8WR47Mpuw03w56PN5mcdOmvCz3fr7puPu6m0Vwyl/0/Huorx0xSZxj4yvQd9FqaP40mUb/MVyaoY4pzXoLdYgf3+ygqCx5JiwBhYlnxCBjHNu0Z/7BQ9BcQXIqmqor8+CR3aNE6NxJRdQRw5fypqtoeiQC7T0TBK/WmN/r3puhs10MakzjFjLNKh" > /home/centos/.ssh/authorized_keys
+    VersionNumber: 21
+  MetricAlarms:
+  - ActionsEnabled: true
+    AlarmActions:
+    - arn:aws:sns:ap-south-1:340077773684:Infra_alerting
+    AlarmName: lms-cool-down
+    ComparisonOperator: LessThanOrEqualToThreshold
+    DatapointsToAlarm: 1
+    Dimensions:
+    - Name: AutoScalingGroupName
+      Value: ''
+    EvaluationPeriods: 1
+    InsufficientDataActions: []
+    MetricName: CPUUtilization
+    Namespace: AWS/EC2
+    OKActions: []
+    Period: 900
+    PolicyName: lms-scaling-policy-scale-down
+    Statistic: Average
+    Threshold: 30.0
+  - ActionsEnabled: true
+    AlarmActions:
+    - arn:aws:sns:ap-south-1:340077773684:Infra_alerting
+    AlarmName: lms-cpu-utilization-policy
+    ComparisonOperator: GreaterThanOrEqualToThreshold
+    Dimensions:
+    - Name: AutoScalingGroupName
+      Value: ''
+    EvaluationPeriods: 1
+    InsufficientDataActions: []
+    MetricName: CPUUtilization
+    Namespace: AWS/EC2
+    OKActions: []
+    Period: 300
+    PolicyName: lms-scaling-policy-scale-up
+    Statistic: Average
+    Threshold: 40.0
+  ScalingPolicies:
+  - AdjustmentType: ChangeInCapacity
+    Enabled: true
+    MetricAggregationType: Average
+    PolicyName: lms-scaling-policy-scale-down
+    PolicyType: StepScaling
+    StepAdjustments:
+    - MetricIntervalUpperBound: -10.0
+      ScalingAdjustment: -2
+    - MetricIntervalLowerBound: -10.0
+      MetricIntervalUpperBound: 0.0
+      ScalingAdjustment: -1
+  - AdjustmentType: ChangeInCapacity
+    Enabled: true
+    EstimatedInstanceWarmup: 300
+    MetricAggregationType: Average
+    PolicyName: lms-scaling-policy-scale-up
+    PolicyType: StepScaling
+    StepAdjustments:
+    - MetricIntervalLowerBound: 0.0
+      MetricIntervalUpperBound: 10.0
+      ScalingAdjustment: 1
+    - MetricIntervalLowerBound: 10.0
+      ScalingAdjustment: 2
+  TargetGroups:
+  - CiCdTargetGroupSourceType: external
+    HealthCheckEnabled: true
+    HealthCheckIntervalSeconds: 8
+    HealthCheckPath: /lms/actuator/health
+    HealthCheckPort: traffic-port
+    HealthCheckProtocol: HTTP
+    HealthCheckTimeoutSeconds: 5
+    HealthyThresholdCount: 3
+    IpAddressType: ipv4
+    ListenerRuleArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:listener-rule/app/lending-platform-staging/6098537cf8452c61/dd9498222785b519/c0ae4fd4322f8610
+    LoadBalancerArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:loadbalancer/app/lending-platform-staging/6098537cf8452c61
+    Matcher:
+      HttpCode: '200'
+    Port: 80
+    Protocol: HTTP
+    ProtocolVersion: HTTP1
+    Tags:
+    - Key: Environment
+      Value: Production
+    - Key: Project
+      Value: lending_lms
+    - Key: Organization
+      Value: OCL
+    - Key: Application
+      Value: Backend
+    - Key: TechTeam
+      Value: lending-lms
+    - Key: CostCenter
+      Value: Lending-BLR
+    - Key: BusinessUnit
+      Value: Lending
+    - Key: TeamDL
+      Value: lms.tech@paytm.com
+    - Key: DevopsDL
+      Value: lending.devops@paytm.com
+    TargetType: instance
+    UnhealthyThresholdCount: 2
+    VpcId: vpc-0cf9ec7180949d55d
+ServiceInfo:
+  Alias: lending@paytm.com
+  Environment: *env
+  Org: lending
+  Owner: bikram.das@paytm.com
+  Project: lms
+  Service: lending_lms
+  Team: Lending LMS
+  TeamMembers:
+  - email: ankit1.rai@paytm.com
+    name: Ankit Rai
+  - email: himanshu.dahiya@paytm.com
+    name: Himanshu Dahiya
+  - email: lending.devops@paytm.com
+    name: Lending Devops
+
+---
+AnsiblePlayBookDeployCmd: ansible-playbook deploy.yml -i hosts -l 127.0.0.1 -t logrotate,apm,common,proxysql,bootstrap,nginx,post-bootstrap
+  --vault-password-file ./vault_password -e service=lending_lms -e appname=lending-lms
+  -e logpath=/lending/lending-lms/logs -e project=lending_lms -e env=prod -e bootstraping=true
+  -e health_check='/lms/actuator/health' -e node_role=False -e tagname=False
+  -c local -e@group_vars/security_group_prod_sg_lending_lmsapp -vvv
+BlueGreenDeploymentInfo:
+  AcceptedPerformanceDeviation: 10
+  BlueGreenDeploymentEnabled: true
+  MonitorPeriodSeconds: 180
+  PassiveClusterTrafficPercentage: 1
+  AsyncMetricsSwap: true
+Environment: &env prod
+Profile: *env
+Resources:
+  AutoScalingGroups:
+    AvailabilityZones:
+    - ap-south-1c
+    - ap-south-1b
+    - ap-south-1a
+    CapacityRebalance: true
+    DefaultCooldown: 300
+    DesiredCapacity: 10
+    HealthCheckGracePeriod: 180
+    HealthCheckType: EC2
+    LifeCycleHooks:
+    - DefaultResult: CONTINUE
+      HeartbeatTimeout: 270
+      LifecycleHookName: AsgEc2InstanceElbRegistrationDelay
+      LifecycleTransition: autoscaling:EC2_INSTANCE_LAUNCHING
+    - DefaultResult: CONTINUE
+      HeartbeatTimeout: 100
+      LifecycleHookName: spotcoin-lh-88257
+      LifecycleTransition: autoscaling:EC2_INSTANCE_TERMINATING
+    MaxSize: 30
+    MinSize: 15
+    MixedInstancesPolicy:
+      InstancesDistribution:
+        OnDemandAllocationStrategy: prioritized
+        OnDemandBaseCapacity: 0
+        OnDemandPercentageAboveBaseCapacity: 60
+        SpotAllocationStrategy: capacity-optimized-prioritized
+      LaunchTemplate:
+        LaunchTemplateSpecification:
+          LaunchTemplateName: ''
+        Overrides:
+        - InstanceType: m5a.xlarge
+        - InstanceType: m5.xlarge
+        - InstanceType: r5.xlarge
+        - InstanceType: r5a.xlarge
+    NewInstancesProtectedFromScaleIn: false
+    ServiceLinkedRoleARN: arn:aws:iam::340077773684:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling
+    Tags:
+    - Key: Environment
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Production
+    - Key: Name
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: prod-lending-lmsapp-as-01
+    - Key: Project
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending_lms
+    - Key: Organization
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: OCL
+    - Key: Application
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: backend
+    - Key: TechTeam
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending-lms
+    - Key: CostCenter
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Lending-BLR
+    - Key: BusinessUnit
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: Lending
+    - Key: TeamDL
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lms.tech@paytm.com
+    - Key: DevopsDL
+      PropagateAtLaunch: false
+      ResourceId: prod-lending-lms-as-01
+      ResourceType: auto-scaling-group
+      Value: lending.devops@paytm.com
+    TerminationPolicies:
+    - NewestInstance
+    VPCZoneIdentifier: subnet-025b1473ef6e9b218,subnet-0b1139bd5412c076b,subnet-0711c1031e903d069,subnet-0c2892f3be3821248,subnet-00c5bfde72b33978c,subnet-033c7f7cb2b320fcb,subnet-067b1e93ce3237cd1
+  LaunchTemplate:
+    DefaultVersion: true
+    LaunchTemplateData:
+      BlockDeviceMappings:
+      - DeviceName: /dev/sda1
+        Ebs:
+          DeleteOnTermination: true
+          Encrypted: false
+          VolumeSize: 50
+          VolumeType: gp3
+      - DeviceName: /dev/sdb
+        Ebs:
+          DeleteOnTermination: true
+          Encrypted: false
+          VolumeSize: 50
+          VolumeType: gp3
+      EbsOptimized: false
+      IamInstanceProfile:
+        Arn: arn:aws:iam::340077773684:instance-profile/Lending-Backend-Node
+      ImageId: ami-076503eda3cf38889
+      InstanceType: m5a.xlarge
+      KeyName: lending_devops_2022
+      Monitoring:
+        Enabled: false
+      SecurityGroupIds:
+      - sg-035de152c2e14f074
+      - sg-0505fe11a900becf5
+      - sg-053e4705a896a5ce2
+      TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Environment
+            Value: Production
+          - Key: Project
+            Value: lending_lms
+          - Key: Organization
+            Value: OCL
+          - Key: Application
+            Value: Backend
+          - Key: TechTeam
+            Value: lending-lms
+          - Key: CostCenter
+            Value: Lending-BLR
+          - Key: BusinessUnit
+            Value: Lending
+          - Key: TeamDL
+            Value: lms.tech@paytm.com
+          - Key: DevopsDL
+            Value: lending.devops@paytm.com
+        - ResourceType: volume
+          Tags:
+          - Key: Environment
+            Value: Production
+          - Key: Project
+            Value: lending_lms
+          - Key: Organization
+            Value: OCL
+          - Key: Application
+            Value: Backend
+          - Key: TechTeam
+            Value: lending-lms
+          - Key: CostCenter
+            Value: Lending-BLR
+          - Key: BusinessUnit
+            Value: Lending
+          - Key: TeamDL
+            Value: lms.tech@paytm.com
+          - Key: DevopsDL
+            Value: lending.devops@paytm.com
+      UserData: |
+        #!/usr/bin/env bash
+        exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+        echo "boostrap starttime: $(date)"
+        cd /tmp
+        rm -rf lending-ansible lending-ansible.tar.gz
+        aws s3 cp s3://paytm-lending-infra/scripts/lending-ansible.tar.gz .
+        tar -xvzf lending-ansible.tar.gz
+        cd lending-ansible
+        {{AnsiblePlayBookDeployCmd}}
+        cd ansible-freeipa
+        ansible-playbook -i inventory/hosts install-client.yml -c local
+        echo "boostrap endtime: $(date)"
+        echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCY8y714UIm1OpdtwcP1YYWPKxQAvojHB3aDYA7FuN1GF9V3kHM9JfTCi2KX0QZo2k/WeZ4O6FN1cH+6NRUEiaueLPc8QV1+NHySg9vnC8qJKObN1bujomO9FfOdlssXiWdWvGy3bf4s+zOJ1uKgLdEFhPepuni8WR47Mpuw03w56PN5mcdOmvCz3fr7puPu6m0Vwyl/0/Huorx0xSZxj4yvQd9FqaP40mUb/MVyaoY4pzXoLdYgf3+ygqCx5JiwBhYlnxCBjHNu0Z/7BQ9BcQXIqmqor8+CR3aNE6NxJRdQRw5fypqtoeiQC7T0TBK/WmN/r3puhs10MakzjFjLNKh" > /home/centos/.ssh/authorized_keys
+    VersionDescription: lending-lms-launch-template-v0.0.3
+    VersionNumber: 8
+  MetricAlarms:
+  - ActionsEnabled: true
+    AlarmActions:
+    - arn:aws:sns:ap-south-1:340077773684:Infra_alerting
+    AlarmName: lms-cool-down
+    ComparisonOperator: LessThanOrEqualToThreshold
+    DatapointsToAlarm: 1
+    Dimensions:
+    - Name: AutoScalingGroupName
+      Value: ''
+    EvaluationPeriods: 1
+    InsufficientDataActions: []
+    MetricName: CPUUtilization
+    Namespace: AWS/EC2
+    OKActions: []
+    Period: 900
+    PolicyName: lms-scaling-policy-scale-down
+    Statistic: Average
+    Threshold: 30.0
+  - ActionsEnabled: true
+    AlarmActions:
+    - arn:aws:sns:ap-south-1:340077773684:Infra_alerting
+    AlarmName: lms-cpu-utilization-policy
+    ComparisonOperator: GreaterThanOrEqualToThreshold
+    Dimensions:
+    - Name: AutoScalingGroupName
+      Value: ''
+    EvaluationPeriods: 1
+    InsufficientDataActions: []
+    MetricName: CPUUtilization
+    Namespace: AWS/EC2
+    OKActions: []
+    Period: 300
+    PolicyName: lms-scaling-policy-scale-up
+    Statistic: Average
+    Threshold: 40.0
+  ScalingPolicies:
+  - AdjustmentType: ChangeInCapacity
+    Enabled: true
+    MetricAggregationType: Average
+    PolicyName: lms-scaling-policy-scale-down
+    PolicyType: StepScaling
+    StepAdjustments:
+    - MetricIntervalUpperBound: -10.0
+      ScalingAdjustment: -2
+    - MetricIntervalLowerBound: -10.0
+      MetricIntervalUpperBound: 0.0
+      ScalingAdjustment: -1
+  - AdjustmentType: ChangeInCapacity
+    Enabled: true
+    EstimatedInstanceWarmup: 300
+    MetricAggregationType: Average
+    PolicyName: lms-scaling-policy-scale-up
+    PolicyType: StepScaling
+    StepAdjustments:
+    - MetricIntervalLowerBound: 0.0
+      MetricIntervalUpperBound: 10.0
+      ScalingAdjustment: 1
+    - MetricIntervalLowerBound: 10.0
+      ScalingAdjustment: 2
+  TargetGroups:
+  - CiCdTargetGroupSourceType: external
+    HealthCheckEnabled: true
+    HealthCheckIntervalSeconds: 8
+    HealthCheckPath: /lms/actuator/health
+    HealthCheckPort: traffic-port
+    HealthCheckProtocol: HTTP
+    HealthCheckTimeoutSeconds: 5
+    HealthyThresholdCount: 3
+    IpAddressType: ipv4
+    LoadBalancerArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:loadbalancer/app/prod-lending-platform-services/29f9912ec4039adb
+    ListenerRuleArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:listener-rule/app/prod-lending-platform-services/29f9912ec4039adb/c5b875deb313def8/5532dea8c36ebd0b
+    Matcher:
+      HttpCode: '200'
+    Port: 80
+    Protocol: HTTP
+    ProtocolVersion: HTTP1
+    Tags:
+    - Key: Environment
+      Value: Production
+    - Key: Project
+      Value: lending_lms
+    - Key: Organization
+      Value: OCL
+    - Key: Application
+      Value: Backend
+    - Key: TechTeam
+      Value: lending-lms
+    - Key: CostCenter
+      Value: Lending-BLR
+    - Key: BusinessUnit
+      Value: Lending
+    - Key: TeamDL
+      Value: lms.tech@paytm.com
+    - Key: DevopsDL
+      Value: lending.devops@paytm.com
+    TargetType: instance
+    UnhealthyThresholdCount: 2
+    VpcId: vpc-09e4dac2981ee87fc
+  - CiCdTargetGroupSourceType: internal
+    HealthCheckEnabled: true
+    HealthCheckIntervalSeconds: 8
+    HealthCheckPath: /lms/actuator/health
+    HealthCheckPort: traffic-port
+    HealthCheckProtocol: HTTP
+    HealthCheckTimeoutSeconds: 5
+    HealthyThresholdCount: 3
+    IpAddressType: ipv4
+    LoadBalancerArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:loadbalancer/app/prod-platform-services-internal/75fafcfb54057abf
+    ListenerRuleArn: arn:aws:elasticloadbalancing:ap-south-1:340077773684:listener-rule/app/prod-platform-services-internal/75fafcfb54057abf/890e68d7771762ff/a1ad77e03f1d8208
+    Matcher:
+      HttpCode: '200'
+    Port: 80
+    Protocol: HTTP
+    ProtocolVersion: HTTP1
+    Tags:
+    - Key: Environment
+      Value: Production
+    - Key: Project
+      Value: lending_lms
+    - Key: Organization
+      Value: OCL
+    - Key: Application
+      Value: Backend
+    - Key: TechTeam
+      Value: lending-lms
+    - Key: CostCenter
+      Value: Lending-BLR
+    - Key: BusinessUnit
+      Value: Lending
+    - Key: TeamDL
+      Value: lms.tech@paytm.com
+    - Key: DevopsDL
+      Value: lending.devops@paytm.com
+    TargetType: instance
+    UnhealthyThresholdCount: 2
+    VpcId: vpc-09e4dac2981ee87fc
+ServiceInfo:
+  Alias: lending@paytm.com
+  Environment: *env
+  Org: lending
+  Owner: bikram.das@paytm.com
+  Project: lms
+  Service: lending_lms
+  Team: Lending LMS
+  TeamMembers:
+  - email: ankit1.rai@paytm.com
+    name: Ankit Rai
+  - email: himanshu.dahiya@paytm.com
+    name: Himanshu Dahiya
+  - email: lending.devops@paytm.com
+    name: Lending Devops
+
+---
+AnsiblePlayBookDeployCmd: ansible-playbook deploy.yml -i hosts -l 127.0.0.1 -t logrotate,apm,common,proxysql,bootstrap,nginx,post-bootstrap
+  --vault-password-file ./vault_password -e service=lending_lms -e appname=lending-lms
+  -e logpath=/lending/lending-lms/logs -e project=lms -e env=stage -e bootstraping=true
+  -e health_check='/lms/actuator/health' -e node_role=False -e tagname=False
+  -c local -e@group_vars/security_group_prod_sg_lending_lmsapp -vvv
+BlueGreenDeploymentInfo:
+  AcceptedPerformanceDeviation: 50
+  IsBaseline2XXCheckRequired: false
+  AsyncMetricsSwap: true
+  MonitorPeriodSeconds: 180
+Environment: &env stage
+Profile: *env
+Resources:
+  AutoScalingGroups:
+    DesiredCapacity: 1
+    MaxSize: 1
+    MinSize: 1
+ServiceInfo:
+  Environment: *env
